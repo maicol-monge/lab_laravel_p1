@@ -232,17 +232,47 @@ class EmpleadoController extends Controller
                 'promedio' => round((float) $r->promedio, 2),
             ]);
 
+        // Evolución: promedio de salario neto por año de fecha_contratacion
+        // Calculamos en SQL para evitar usar accessors en agregaciones: AVG(salario_base + bonificacion - descuento)
+        $evolucionSalarioPorAno = (clone $activo)
+            ->select(DB::raw('YEAR(fecha_contratacion) as year'), DB::raw('AVG(salario_base + bonificacion - descuento) as promedio'))
+            ->groupBy(DB::raw('YEAR(fecha_contratacion)'))
+            ->orderBy('year')
+            ->get()
+            ->map(fn($r) => [
+                'year' => (int) $r->year,
+                'promedio' => round((float) $r->promedio, 2),
+            ]);
+
         // Totales mensuales (snapshot of current values)
         $totalBonificacionesMensuales = (clone $activo)->sum('bonificacion');
         $totalDescuentosMensuales = (clone $activo)->sum('descuento');
 
-        // Crecimiento salario neto vs año anterior (compare avg salario_neto this year vs last year based on updated_at)
+        // Promedio general de salario BASE entre todos los empleados activos
+        $promedioSalarioBaseGeneral = round((clone $activo)->avg('salario_base') ?? 0, 2);
+
+        // Crecimiento salario neto vs año anterior (compare avg salario_neto de empleados según año de fecha_contratacion)
+        // Usamos fecha_contratacion para considerar hires por año
         $year = $now->year;
-        $avgNetoThisYear = (clone $activo)->whereYear('updated_at', $year)->get()->avg('salario_neto');
-        $avgNetoLastYear = (clone $activo)->whereYear('updated_at', $year - 1)->get()->avg('salario_neto');
+        $queryThisYear = (clone $activo)->whereYear('fecha_contratacion', $year);
+        $queryLastYear = (clone $activo)->whereYear('fecha_contratacion', $year - 1);
+
+        $countThisYear = $queryThisYear->count();
+        $countLastYear = $queryLastYear->count();
+
+        $avgNetoThisYear = $countThisYear ? $queryThisYear->get()->avg('salario_neto') : 0;
+        $avgNetoLastYear = $countLastYear ? $queryLastYear->get()->avg('salario_neto') : 0;
+
+        // Sólo calculamos crecimiento cuando hay datos en ambos años
         $crecimientoNeto = null;
-        if ($avgNetoLastYear && $avgNetoLastYear > 0) {
+        $crecimientoDisponible = false;
+        if ($countThisYear > 0 && $countLastYear > 0 && $avgNetoLastYear > 0) {
             $crecimientoNeto = round((($avgNetoThisYear - $avgNetoLastYear) / $avgNetoLastYear) * 100, 2);
+            $crecimientoDisponible = true;
+        } else {
+            // No hay datos suficientes para comparar; devolver 0 pero indicar que no está disponible
+            $crecimientoNeto = 0.0;
+            $crecimientoDisponible = false;
         }
 
         // Edad promedio
@@ -323,10 +353,22 @@ class EmpleadoController extends Controller
 
         return response()->json([
             'promedio_salario_por_departamento' => $promedioPorDept,
+            // alias más explícito solicitado: promedio de salario BASE por departamento
+            'promedio_salario_base_por_departamento' => $promedioPorDept,
+            // Evolución del salario promedio por año de contratación
+            'evolucion_salario_promedio_por_anio' => $evolucionSalarioPorAno,
             'total_bonificaciones_mensuales' => round((float) $totalBonificacionesMensuales, 2),
             'total_descuentos_mensuales' => round((float) $totalDescuentosMensuales, 2),
+            // crecimiento por fecha_contratacion (diagnóstico incluido)
             'crecimiento_salario_neto_pct' => $crecimientoNeto,
+            'crecimiento_disponible' => (bool) $crecimientoDisponible,
+            'crecimiento_count_this_year' => (int) $countThisYear,
+            'crecimiento_count_last_year' => (int) $countLastYear,
+            'crecimiento_avg_neto_this_year' => (float) round($avgNetoThisYear, 2),
+            'crecimiento_avg_neto_last_year' => (float) round($avgNetoLastYear, 2),
             'edad_promedio' => $edadPromedio,
+            // Promedio general del salario BASE entre todos los empleados activos
+            'promedio_salario_base_general' => (float) $promedioSalarioBaseGeneral,
             'distribucion_sexo' => $distribucionSexo,
             'edad_promedio_directivo' => $edadPromedioDirectivo,
             'edad_promedio_operativo' => $edadPromedioOperativo,
