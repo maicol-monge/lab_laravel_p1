@@ -7,6 +7,7 @@ use App\Models\Empleado;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Validation\Rule;
 
 class EmpleadoController extends Controller
 {
@@ -47,6 +48,9 @@ class EmpleadoController extends Controller
             'nombre' => 'required|string|max:100',
             'departamento' => 'required|string|max:50',
             'puesto' => 'required|string|max:50',
+            'dui' => ['required', 'regex:/^\d{8}-\d$/', 'unique:empleados,dui'],
+            'telefono' => ['required', 'regex:/^[0-9\-\+\s]{7,20}$/', 'unique:empleados,telefono'],
+            'correo' => ['required', 'email', 'max:100', 'unique:empleados,correo'],
             'salario_base' => 'required|numeric|min:0',
             'bonificacion' => 'nullable|numeric|min:0',
             'descuento' => 'nullable|numeric|min:0',
@@ -57,15 +61,38 @@ class EmpleadoController extends Controller
             'estado' => 'nullable|integer',
         ]);
 
+        // business validations
+        $base = isset($data['salario_base']) ? (float) $data['salario_base'] : 0.0;
+        $bon = isset($data['bonificacion']) ? (float) $data['bonificacion'] : 0.0;
+        $descuento = isset($data['descuento']) ? (float) $data['descuento'] : 0.0;
+
+        // edad >= 18
+        $edad = Carbon::parse($data['fecha_nacimiento'])->diffInYears(Carbon::now());
+        if ($edad < 18) {
+            return response()->json(['message' => 'El empleado debe ser mayor de edad'], 422);
+        }
+
+        // fecha_nacimiento <= fecha_contratacion
+        if (Carbon::parse($data['fecha_nacimiento'])->gt(Carbon::parse($data['fecha_contratacion']))) {
+            return response()->json(['message' => 'La fecha de nacimiento no puede ser posterior a la fecha de contratación'], 422);
+        }
+
+        // descuento no mayor que salario bruto
+        $bruto = $base + $bon;
+        if ($descuento > $bruto) {
+            return response()->json(['message' => 'El descuento no puede ser mayor al salario bruto'], 422);
+        }
+
         $empleado = Empleado::create($data);
         return response()->json($empleado, 201);
     }
 
+
     public function update(Request $request, $id): JsonResponse
     {
         $empleado = Empleado::findOrFail($id);
-
-        $data = $request->validate([
+        // Build rules so we can ignore the current record on unique checks
+        $rules = [
             'nombre' => 'sometimes|required|string|max:100',
             'departamento' => 'sometimes|required|string|max:50',
             'puesto' => 'sometimes|required|string|max:50',
@@ -77,7 +104,58 @@ class EmpleadoController extends Controller
             'sexo' => 'sometimes|required|in:M,F,O',
             'evaluacion_desempeno' => 'nullable|numeric|min:0',
             'estado' => 'nullable|integer',
-        ]);
+        ];
+
+        // Unique contact fields: ignore current empleado by primary key
+        $rules['dui'] = [
+            'sometimes',
+            'required',
+            'regex:/^\d{8}-\d$/',
+            Rule::unique('empleados', 'dui')->ignore($empleado->getKey(), $empleado->getKeyName()),
+        ];
+        $rules['telefono'] = [
+            'sometimes',
+            'required',
+            'regex:/^[0-9\-\+\s]{7,20}$/',
+            Rule::unique('empleados', 'telefono')->ignore($empleado->getKey(), $empleado->getKeyName()),
+        ];
+        $rules['correo'] = [
+            'sometimes',
+            'required',
+            'email',
+            'max:100',
+            Rule::unique('empleados', 'correo')->ignore($empleado->getKey(), $empleado->getKeyName()),
+        ];
+
+        $data = $request->validate($rules);
+
+        // Merge current values to validate business rules against final values
+        $final = array_merge($empleado->toArray(), $data);
+
+        $base = isset($final['salario_base']) ? (float) $final['salario_base'] : 0.0;
+        $bon = isset($final['bonificacion']) ? (float) $final['bonificacion'] : 0.0;
+        $descuento = isset($final['descuento']) ? (float) $final['descuento'] : 0.0;
+
+        // edad >= 18 (if fecha_nacimiento provided or exists)
+        if (!empty($final['fecha_nacimiento'])) {
+            $edad = Carbon::parse($final['fecha_nacimiento'])->diffInYears(Carbon::now());
+            if ($edad < 18) {
+                return response()->json(['message' => 'El empleado debe ser mayor de edad'], 422);
+            }
+        }
+
+        // fecha_nacimiento <= fecha_contratacion (if both present)
+        if (!empty($final['fecha_nacimiento']) && !empty($final['fecha_contratacion'])) {
+            if (Carbon::parse($final['fecha_nacimiento'])->gt(Carbon::parse($final['fecha_contratacion']))) {
+                return response()->json(['message' => 'La fecha de nacimiento no puede ser posterior a la fecha de contratación'], 422);
+            }
+        }
+
+        // descuento no mayor que salario bruto
+        $bruto = $base + $bon;
+        if ($descuento > $bruto) {
+            return response()->json(['message' => 'El descuento no puede ser mayor al salario bruto'], 422);
+        }
 
         $empleado->fill($data);
         $empleado->save();
@@ -113,16 +191,24 @@ class EmpleadoController extends Controller
         $result = [
             'id' => $empleado->{$empleado->getKeyName()},
             'nombre' => $empleado->nombre,
-            'salario_base' => (float) $empleado->salario_base,
-            'bonificacion' => (float) $empleado->bonificacion,
-            'descuento' => (float) $empleado->descuento,
-            'salario_bruto' => (float) $empleado->salario_bruto,
-            'salario_neto' => (float) $empleado->salario_neto,
+            'dui' => $empleado->dui,
+            'telefono' => $empleado->telefono,
+            'correo' => $empleado->correo,
+            'salario_base' => round((float) $empleado->salario_base, 2),
+            'bonificacion' => round((float) $empleado->bonificacion, 2),
+            'descuento' => round((float) $empleado->descuento, 2),
+            'salario_bruto' => round((float) $empleado->salario_bruto, 2),
+            'salario_neto' => round((float) $empleado->salario_neto, 2),
             'edad' => $empleado->edad,
             'antiguedad' => $empleado->antiguedad,
             'evaluacion_desempeno' => $empleado->evaluacion_desempeno === null ? null : (float) $empleado->evaluacion_desempeno,
-            'ratio_desempeno_salario' => $empleado->ratio_desempeno_salario,
+            'ratio_desempeno_salario' => $empleado->ratio_desempeno_salario === null ? null : round($empleado->ratio_desempeno_salario, 2),
         ];
+
+        // business check: descuento no mayor que salario bruto
+        if ($result['descuento'] > $result['salario_bruto']) {
+            return response()->json(['message' => 'El descuento en la ficha del empleado es mayor que el salario bruto'], 422);
+        }
 
         return response()->json($result);
     }
@@ -139,7 +225,11 @@ class EmpleadoController extends Controller
         // Promedio de salario base por departamento
         $promedioPorDept = (clone $activo)->select('departamento', DB::raw('AVG(salario_base) as promedio'))
             ->groupBy('departamento')
-            ->get();
+            ->get()
+            ->map(fn($r) => [
+                'departamento' => $r->departamento,
+                'promedio' => round((float) $r->promedio, 2),
+            ]);
 
         // Totales mensuales (snapshot of current values)
         $totalBonificacionesMensuales = (clone $activo)->sum('bonificacion');
@@ -155,7 +245,7 @@ class EmpleadoController extends Controller
         }
 
         // Edad promedio
-        $edadPromedio = (clone $activo)->get()->avg('edad');
+        $edadPromedio = round((clone $activo)->get()->avg('edad') ?? 0, 2);
 
         // Distribución por sexo
         $distribucionSexo = (clone $activo)->select('sexo', DB::raw('COUNT(*) as total'))
@@ -163,56 +253,77 @@ class EmpleadoController extends Controller
             ->get();
 
         // Edad promedio por puesto directivo vs area operativa
-        // Heurística: puestos that contain directivo keywords
-        $directivoKeywords = ['Director', 'Gerente', 'Jefe', 'Chief', 'CEO', 'CTO', 'CFO'];
-        $directivos = (clone $activo)->where(function ($q) use ($directivoKeywords) {
-            foreach ($directivoKeywords as $kw) {
-                $q->orWhere('puesto', 'like', "%{$kw}%");
-            }
-        })->get();
-        $edadPromedioDirectivo = $directivos->avg('edad');
+        // Use known puestos/departamentos supplied by frontend constants
+        $puestosDirectivos = [
+            // from frontend PUESTOS: consider 'Gerente' as directivo
+            'Gerente',
+        ];
 
-        // Area operativa: departments with common operational names (heurística)
-        $operativaKeywords = ['Operaci', 'Producci', 'Operacion', 'Taller', 'Linea'];
-        $operativos = (clone $activo)->where(function ($q) use ($operativaKeywords) {
-            foreach ($operativaKeywords as $kw) {
-                $q->orWhere('departamento', 'like', "%{$kw}%");
-            }
-        })->get();
-        $edadPromedioOperativo = $operativos->avg('edad');
+        $departamentosOperativos = [
+            // from frontend DEPARTAMENTOS: consider 'Operaciones' and 'TI' as operativa
+            'Operaciones',
+            'TI',
+        ];
+
+        // Directivos: exact match on puesto
+        $directivos = (clone $activo)->whereIn('puesto', $puestosDirectivos)->get();
+        $edadPromedioDirectivo = round($directivos->avg('edad') ?? 0, 2);
+
+        // Operativos: departamento in known operativa list
+        $operativos = (clone $activo)->whereIn('departamento', $departamentosOperativos)->get();
+        $edadPromedioOperativo = round($operativos->avg('edad') ?? 0, 2);
 
         // Evaluación promedio por departamento
         $evaluacionPorDept = (clone $activo)->select('departamento', DB::raw('AVG(evaluacion_desempeno) as promedio'))
             ->groupBy('departamento')
-            ->get();
+            ->get()
+            ->map(fn($r) => [
+                'departamento' => $r->departamento,
+                'promedio' => round((float) $r->promedio, 2),
+            ]);
 
         // Correlación salario-desempeño (Pearson)
-        $salarios = (clone $activo)->whereNotNull('evaluacion_desempeno')->pluck('salario_base')->map(fn($v) => (float) $v)->toArray();
-        $evals = (clone $activo)->whereNotNull('evaluacion_desempeno')->pluck('evaluacion_desempeno')->map(fn($v) => (float) $v)->toArray();
+        // Get same ordered rows to keep salary and evals aligned
+        $rowsEval = (clone $activo)->whereNotNull('evaluacion_desempeno')->get();
+        $salarios = $rowsEval->pluck('salario_base')->map(fn($v) => (float) $v)->toArray();
+        $evals = $rowsEval->pluck('evaluacion_desempeno')->map(fn($v) => (float) $v)->toArray();
         $correlacionSalarioDesempeno = $this->pearsonCorrelation($salarios, $evals);
 
         // Empleados con evaluación > 95 and > 70 counts and list (limit)
-        $empleadosEval95 = (clone $activo)->where('evaluacion_desempeno', '>', 95)->get();
-        $personalEval70 = (clone $activo)->where('evaluacion_desempeno', '>', 70)->get();
+        $empleadosEval95 = (clone $activo)->where('evaluacion_desempeno', '>', 95)->get()->map(fn($e) => [
+            'id' => $e->{$e->getKeyName()},
+            'nombre' => $e->nombre,
+            'evaluacion_desempeno' => (float) $e->evaluacion_desempeno,
+        ]);
+        $personalEval70 = (clone $activo)->where('evaluacion_desempeno', '>', 70)->get()->map(fn($e) => [
+            'id' => $e->{$e->getKeyName()},
+            'nombre' => $e->nombre,
+            'evaluacion_desempeno' => (float) $e->evaluacion_desempeno,
+        ]);
 
         // Antiguedad promedio
-        $antiguedadPromedio = (clone $activo)->get()->avg('antiguedad');
+        $antiguedadPromedio = round((clone $activo)->get()->avg('antiguedad') ?? 0, 2);
 
         // Correlación antiguedad - salario
-        $antiguedades = (clone $activo)->pluck('antiguedad')->map(fn($v) => (float) $v)->toArray();
-        $salariosForAnt = (clone $activo)->pluck('salario_base')->map(fn($v) => (float) $v)->toArray();
+        $rowsAll = (clone $activo)->get();
+        $antiguedades = $rowsAll->pluck('antiguedad')->map(fn($v) => (float) $v)->toArray();
+        $salariosForAnt = $rowsAll->pluck('salario_base')->map(fn($v) => (float) $v)->toArray();
         $correlacionAntiguedadSalario = $this->pearsonCorrelation($antiguedades, $salariosForAnt);
 
         // Tiempo promedio de permanencia = antiguedad promedio (same as antiguedadPromedio)
         $tiempoPromedioPermanencia = $antiguedadPromedio;
 
         // Personal con mas de 10 años
-        $personalMas10 = (clone $activo)->get()->filter(fn($e) => ($e->antiguedad ?? 0) > 10)->values();
+        $personalMas10 = (clone $activo)->get()->filter(fn($e) => ($e->antiguedad ?? 0) > 10)->values()->map(fn($e) => [
+            'id' => $e->{$e->getKeyName()},
+            'nombre' => $e->nombre,
+            'antiguedad' => $e->antiguedad,
+        ]);
 
         return response()->json([
             'promedio_salario_por_departamento' => $promedioPorDept,
-            'total_bonificaciones_mensuales' => (float) $totalBonificacionesMensuales,
-            'total_descuentos_mensuales' => (float) $totalDescuentosMensuales,
+            'total_bonificaciones_mensuales' => round((float) $totalBonificacionesMensuales, 2),
+            'total_descuentos_mensuales' => round((float) $totalDescuentosMensuales, 2),
             'crecimiento_salario_neto_pct' => $crecimientoNeto,
             'edad_promedio' => $edadPromedio,
             'distribucion_sexo' => $distribucionSexo,
@@ -260,6 +371,6 @@ class EmpleadoController extends Controller
         $den = sqrt($denX * $denY);
         if ($den == 0.0)
             return null;
-        return round($num / $den, 4);
+        return round($num / $den, 2);
     }
 }
