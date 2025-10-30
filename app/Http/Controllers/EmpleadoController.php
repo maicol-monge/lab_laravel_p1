@@ -194,6 +194,7 @@ class EmpleadoController extends Controller
             'dui' => $empleado->dui,
             'telefono' => $empleado->telefono,
             'correo' => $empleado->correo,
+            'fecha_contratacion' => $empleado->fecha_contratacion,
             'salario_base' => round((float) $empleado->salario_base, 2),
             'bonificacion' => round((float) $empleado->bonificacion, 2),
             'descuento' => round((float) $empleado->descuento, 2),
