@@ -313,12 +313,13 @@ class EmpleadoController extends Controller
                 'promedio' => round((float) $r->promedio, 2),
             ]);
 
-        // Correlación salario-desempeño (Pearson)
+        // Correlación salario-desempeño (Pearson) — explícitamente sólo empleados activos
         // Get same ordered rows to keep salary and evals aligned
-        $rowsEval = (clone $activo)->whereNotNull('evaluacion_desempeno')->get();
+        $rowsEval = Empleado::where('estado', 1)->whereNotNull('evaluacion_desempeno')->get();
         $salarios = $rowsEval->pluck('salario_base')->map(fn($v) => (float) $v)->toArray();
         $evals = $rowsEval->pluck('evaluacion_desempeno')->map(fn($v) => (float) $v)->toArray();
         $correlacionSalarioDesempeno = $this->pearsonCorrelation($salarios, $evals);
+        $correlacionSalarioDesempeno_n = min(count($salarios), count($evals));
 
         // Empleados con evaluación > 95 and > 70 counts and list (limit)
         $empleadosEval95 = (clone $activo)->where('evaluacion_desempeno', '>', 95)->get()->map(fn($e) => [
@@ -335,11 +336,12 @@ class EmpleadoController extends Controller
         // Antiguedad promedio
         $antiguedadPromedio = round((clone $activo)->get()->avg('antiguedad') ?? 0, 2);
 
-        // Correlación antiguedad - salario
-        $rowsAll = (clone $activo)->get();
+        // Correlación antiguedad - salario (sólo activos)
+        $rowsAll = Empleado::where('estado', 1)->get();
         $antiguedades = $rowsAll->pluck('antiguedad')->map(fn($v) => (float) $v)->toArray();
         $salariosForAnt = $rowsAll->pluck('salario_base')->map(fn($v) => (float) $v)->toArray();
         $correlacionAntiguedadSalario = $this->pearsonCorrelation($antiguedades, $salariosForAnt);
+        $correlacionAntiguedadSalario_n = min(count($antiguedades), count($salariosForAnt));
 
         // Tiempo promedio de permanencia = antiguedad promedio (same as antiguedadPromedio)
         $tiempoPromedioPermanencia = $antiguedadPromedio;
@@ -374,10 +376,12 @@ class EmpleadoController extends Controller
             'edad_promedio_operativo' => $edadPromedioOperativo,
             'evaluacion_promedio_por_departamento' => $evaluacionPorDept,
             'correlacion_salario_desempeno' => $correlacionSalarioDesempeno,
+            'correlacion_salario_desempeno_n' => $correlacionSalarioDesempeno_n ?? 0,
             'empleados_con_eval_gt_95' => $empleadosEval95,
             'personal_eval_gt_70' => $personalEval70,
             'antiguedad_promedio' => $antiguedadPromedio,
             'correlacion_antiguedad_salario' => $correlacionAntiguedadSalario,
+            'correlacion_antiguedad_salario_n' => $correlacionAntiguedadSalario_n ?? 0,
             'tiempo_promedio_permanencia' => $tiempoPromedioPermanencia,
             'personal_mas_10_anos' => $personalMas10,
         ]);
